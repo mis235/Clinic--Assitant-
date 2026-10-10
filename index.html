@@ -266,7 +266,7 @@ footer.foot button{border:0;background:none;color:var(--accent);font-weight:700;
     <span><b>Dr. Nishita's Clinic for Skin, Hair &amp; Aesthetics</b></span>
     <span>Road No. 7, 1st Floor, Sowbhagya Abode, beside Iran Embassy, Banjara Hills, Hyderabad 500034</span>
     <span>Call / WhatsApp <b>+91 93812 19187</b></span>
-    <span>Version 13 · 10 Oct 2026</span>
+    <span>Version 14 · 10 Oct 2026</span>
     <button type="button" id="staffBtn">Staff: QR codes &amp; voice</button>
   </footer>
   <button class="fab" id="fab" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Ask a question</button>
@@ -2192,25 +2192,39 @@ chipsEl.addEventListener("click",e=>{ const b=e.target.closest("button"); if(b) 
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition, micBtn=document.getElementById("mic");
 let rec=null, tipShown=false;
 function micTip(){ if(tipShown) return; tipShown=true; botSay(G.en.micTip,{cls:"tip"}); document.getElementById("msg").focus(); }
+const inClaude = /claude\.ai|claudeusercontent|anthropic/i.test(location.hostname) || window.top!==window.self;
+function micProblem(code){
+  const M={
+    unsupported:"This browser can't listen to voice. Please open the clinic link in Google Chrome (Android / computer) or Safari (iPhone). You can still type your question.",
+    blocked:"Voice input is blocked inside this preview page. Please open the clinic website link in Chrome or Safari to talk to me. You can still type your question.",
+    "not-allowed":"Microphone permission is blocked. Tap the lock icon (🔒) next to the website address → Permissions → Microphone → Allow, then reload the page and tap the mic again.",
+    "service-not-allowed":"Microphone permission is blocked. Tap the lock icon (🔒) next to the website address → Permissions → Microphone → Allow, then reload the page.",
+    "audio-capture":"I can't find a working microphone. Please check that no other app (call, WhatsApp, recorder) is using it, then tap the mic again.",
+    network:"Voice recognition needs internet. Please check your connection and tap the mic again.",
+    "no-speech":"I couldn't hear anything. Please speak clearly, close to the phone, right after tapping the mic.",
+    "language-not-supported":"This phone can't recognise speech in this language. Try English, or type your question."
+  };
+  botSay(M[code]||("The microphone stopped ("+code+"). Please tap the mic and try again, or type your question."),{cls:"tip"});
+}
 /* Talk mode: tap the mic once and have a conversation. It listens, answers by voice, then listens again,
    until the patient taps the mic again or stays silent twice. */
 let talkOn=false, silentRuns=0;
 function afterSpeak(){ if(talkOn && !rec) setTimeout(()=>{ if(talkOn && !rec) listen(); }, 450); }
-function stopTalk(){ talkOn=false; silentRuns=0; micBtn.classList.remove("on","talk"); micBtn.title="Speak your question"; if(rec){ try{ rec.abort(); }catch(_){} } rec=null; setOrb(""); }
+function stopTalk(){ document.getElementById("msg").placeholder="Type your question…"; talkOn=false; silentRuns=0; micBtn.classList.remove("on","talk"); micBtn.title="Speak your question"; if(rec){ try{ rec.abort(); }catch(_){} } rec=null; setOrb(""); }
 function listen(){
   if(!SR){ stopTalk(); micTip(); return; }
   let heard=false;
   try{
     rec=new SR(); rec.lang=TAG[vlang]; rec.interimResults=true; rec.maxAlternatives=1; rec.continuous=false;
     rec.onresult=ev=>{ heard=true; const r=[...ev.results].map(x=>x[0].transcript).join(""); const m=document.getElementById("msg"); m.value=r; if(ev.results[ev.results.length-1].isFinal){ m.value=""; silentRuns=0; const q=r; rec.onend=null; try{ rec.stop(); }catch(_){} rec=null; setOrb(""); ask(q, true); } };
-    rec.onerror=ev=>{ if(["not-allowed","service-not-allowed","audio-capture"].includes(ev.error)){ stopTalk(); micTip(); } };
+    rec.onerror=ev=>{ const e=ev.error||"unknown"; if(e==="aborted") return; if(e==="no-speech"){ if(silentRuns>=1){ stopTalk(); micProblem("no-speech"); } return; } stopTalk(); micProblem(inClaude && (e==="not-allowed"||e==="service-not-allowed") ? "blocked" : e); };
     rec.onend=()=>{ rec=null; setOrb(talkOn?"":""); if(!talkOn) return; if(!heard){ silentRuns++; if(silentRuns>=2){ stopTalk(); botSay("I'll stop listening now. Tap the microphone whenever you want to talk again."); return; } setTimeout(()=>{ if(talkOn && !rec) listen(); },300); } };
-    rec.start(); setOrb("listen"); statusEl.textContent="Listening… speak now (tap the mic to stop)";
+    rec.start(); setOrb("listen"); statusEl.textContent="🎤 Listening… speak now (tap the mic to stop)"; document.getElementById("msg").placeholder="Listening… speak now";
   }catch(_){ rec=null; stopTalk(); micTip(); }
 }
 micBtn.onclick=()=>{
   if(talkOn){ stopTalk(); return; }
-  if(!SR){ micTip(); return; }
+  if(!SR){ micProblem(inClaude?"blocked":"unsupported"); return; }
   stopSpeak(); talkOn=true; silentRuns=0; micBtn.classList.add("on","talk"); micBtn.title="Stop talking";
   if(!soundOn) setMode(true);
   listen();
