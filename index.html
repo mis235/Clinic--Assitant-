@@ -128,9 +128,11 @@ form.ask input{flex:1;min-width:0;border:1px solid var(--line);background:var(--
 .icon.send{background:var(--accent);color:var(--accent-ink)}
 .icon.mic{background:var(--sunk);color:var(--ink);border:1px solid var(--line)}
 .icon.mic.on{background:var(--lilac);color:#fff}
+.stopbtn{margin-left:auto;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:6px 14px;font-weight:700;font-size:13px}
 .icon.mic.talk{animation:micpulse 1.4s ease-in-out infinite}
 @keyframes micpulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--lilac) 55%,transparent)}50%{box-shadow:0 0 0 9px transparent}}
-@media (prefers-reduced-motion:reduce){.icon.mic.talk{animation:none}}
+@media (prefers-reduced-motion:reduce){.stopbtn{margin-left:auto;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:6px 14px;font-weight:700;font-size:13px}
+.icon.mic.talk{animation:none}}
 .note{font-size:12px;color:var(--muted);padding:0 16px 12px}
 
 .lib h3{font-family:var(--display);font-weight:400;font-size:21px;letter-spacing:.04em;margin:24px 0 10px;display:flex;align-items:center;gap:8px}
@@ -231,6 +233,7 @@ footer.foot button{border:0;background:none;color:var(--accent);font-weight:700;
         <div class="chat-head">
           <div class="orb" id="orb" aria-hidden="true"></div>
           <div><b>Clinic Assistant</b><small id="status">Ask anything about your treatment</small></div>
+          <button type="button" id="stopBtn" class="stopbtn" hidden aria-label="Stop speaking">■ Stop</button>
         </div>
         <div class="log" id="log" aria-live="polite"></div>
         <div class="chips" id="chips"></div>
@@ -266,7 +269,7 @@ footer.foot button{border:0;background:none;color:var(--accent);font-weight:700;
     <span><b>Dr. Nishita's Clinic for Skin, Hair &amp; Aesthetics</b></span>
     <span>Road No. 7, 1st Floor, Sowbhagya Abode, beside Iran Embassy, Banjara Hills, Hyderabad 500034</span>
     <span>Call / WhatsApp <b>+91 93812 19187</b></span>
-    <span>Version 14 · 10 Oct 2026</span>
+    <span>Version 15 · 12 Oct 2026</span>
     <button type="button" id="staffBtn">Staff: QR codes &amp; voice</button>
   </footer>
   <button class="fab" id="fab" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Ask a question</button>
@@ -1762,7 +1765,7 @@ const isLatin = s => /^[\x00-\x7F]*$/.test(s);
 const esc = s => String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const RX = s => new RegExp(s.replace(ZW,""));
 P.forEach(p=>{ if(PCAT[p.id]) p.c=PCAT[p.id]; });
-const ADD_A={"medifacial":["meditations","meditation","medi facials","media facial","media facials","medic facial","medical facial","medical facials"],"chemical-peels":PEEL_ALIASES,"dermal-fillers":["rha","rha 4","derma fillers","derma filler"],"skin-boosters":["volite","juvederm volite","skin booster injection"],"erbium-glass":["glass toning","glass facial","glass laser"],"rf-subcision":["subcission"],"electrocautery":["e c"],"iv-glutathione":["iv","iv therapy"],"laser-hair-reduction":["lhr f b","lhr full body","full body laser","lhr fbody"],"hair-exosomes":["exosome therapy"]};
+const ADD_A={"oxygeneo":["oxygen","oxy genio","oxygenio","oxygen o","oxy jeneo","oxygeneo facial","oxygen treatment"],"medifacial":["meditations","meditation","medi facials","media facial","media facials","medic facial","medical facial","medical facials"],"chemical-peels":PEEL_ALIASES,"dermal-fillers":["rha","rha 4","derma fillers","derma filler"],"skin-boosters":["volite","juvederm volite","skin booster injection"],"erbium-glass":["glass toning","glass facial","glass laser"],"rf-subcision":["subcission"],"electrocautery":["e c"],"iv-glutathione":["iv","iv therapy"],"laser-hair-reduction":["lhr f b","lhr full body","full body laser","lhr fbody"],"hair-exosomes":["exosome therapy"]};
 for(const [id,al] of Object.entries(ADD_A)){ const p=P.find(q=>q.id===id); if(p) p.a=p.a.concat(al); }
 const BYID = Object.fromEntries(P.map(p=>[p.id,p]));
 const KEYS = ["what","who","how","time","sessions","pain","downtime","before","after","results","risks"];
@@ -1792,7 +1795,7 @@ function voiceFor(lg){
 function loadVoices(){ if(!synth) return; voices = synth.getVoices(); renderVoiceSettings(); }
 if(synth){ loadVoices(); synth.onvoiceschanged = loadVoices; }
 const orb=document.getElementById("orb"), statusEl=document.getElementById("status"), vnote=document.getElementById("vnote");
-function setOrb(s){ orb.className="orb"+(s?" "+s:""); statusEl.textContent = s==="talk"?"Speaking…":s==="listen"?"Listening…":"Ask anything about your treatment"; }
+function setOrb(s){ orb.className="orb"+(s?" "+s:""); statusEl.textContent = s==="talk"?"Speaking… (tap ■ or the mic to interrupt)":s==="listen"?"Listening…":"Ask anything about your treatment"; const sb=document.getElementById("stopBtn"); if(sb) sb.hidden = s!=="talk"; }
 function resetBtn(b){ if(b){ b.classList.remove("stop"); const s=b.querySelector("span"); if(s) s.textContent="Listen"; } }
 /* Telugu: most phones and computers have no Telugu voice, so the clinic's Telugu answers are pre-recorded (female voice).
    Recordings are packed one file per treatment; TE_MAP gives each sentence's file and start/end time in seconds. */
@@ -2222,7 +2225,11 @@ function listen(){
     rec.start(); setOrb("listen"); statusEl.textContent="🎤 Listening… speak now (tap the mic to stop)"; document.getElementById("msg").placeholder="Listening… speak now";
   }catch(_){ rec=null; stopTalk(); micTip(); }
 }
+document.getElementById("stopBtn").addEventListener("click",()=>{ stopSpeak(); });
+document.getElementById("msg").addEventListener("input",()=>{ if(isSpeaking()) stopSpeak(); });
+function isSpeaking(){ return orb.classList.contains("talk") || (synth && synth.speaking) || (player && !player.paused); }
 micBtn.onclick=()=>{
+  if(isSpeaking()){ stopSpeak(); if(!SR){ return; } talkOn=true; silentRuns=0; micBtn.classList.add("on","talk"); if(!rec) listen(); return; }
   if(talkOn){ stopTalk(); return; }
   if(!SR){ micProblem(inClaude?"blocked":"unsupported"); return; }
   stopSpeak(); talkOn=true; silentRuns=0; micBtn.classList.add("on","talk"); micBtn.title="Stop talking";
