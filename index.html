@@ -269,7 +269,7 @@ footer.foot button{border:0;background:none;color:var(--accent);font-weight:700;
     <span><b>Dr. Nishita's Clinic for Skin, Hair &amp; Aesthetics</b></span>
     <span>Road No. 7, 1st Floor, Sowbhagya Abode, beside Iran Embassy, Banjara Hills, Hyderabad 500034</span>
     <span>Call / WhatsApp <b>+91 93812 19187</b></span>
-    <span>Version 15 · 12 Oct 2026</span>
+    <span>Version 16 · 12 Oct 2026</span>
     <button type="button" id="staffBtn">Staff: QR codes &amp; voice</button>
   </footer>
   <button class="fab" id="fab" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Ask a question</button>
@@ -2176,10 +2176,43 @@ function botSay(text, opts={}){
 log.addEventListener("click",e=>{ const b=e.target.closest(".sugg [data-go]"); if(b) openProc(b.dataset.go,true); const a=e.target.closest(".sugg [data-ask]"); if(a) ask(a.dataset.ask); });
 function meSay(text){ const d=document.createElement("div"); d.className="msg me"; d.textContent=text; log.appendChild(d); scrollLog(); try{ d.scrollIntoView({block:"nearest",behavior:"smooth"}); }catch(_){} }
 function reply(ans, spoken){ botSay(ans.en,{ans, sugg:ans.sugg, cls:ans.alert?"alert":""}); let st=false; try{ if(spoken && !soundOn){ soundOn=true; st=speak(ans); soundOn=false; } else st=speak(ans); }catch(_){ setOrb(""); } if(!st) afterSpeak(); }
+/* ===== AI fallback: instant fixed answers first; only questions it can't answer go to the AI (if a key is saved on this device) ===== */
+let AIKB=null, AIPROMPT=null, aiTurns=[];
+function aiKey(){ try{ return localStorage.getItem("priya-gemini-key")||""; }catch(_){ return ""; } }
+async function loadKB(){ if(AIKB) return; const [kb,pr]=await Promise.all([fetch("clinic-knowledge-base.md").then(r=>r.text()), fetch("agent-prompt.txt").then(r=>r.text())]); AIPROMPT=pr;
+  const core=kb.split("## Treatment details")[0]+"\n## Common front-desk questions"+(kb.split("## Common front-desk questions")[1]||"");
+  const secs=kb.split("\n### ").slice(1).map(t=>{ const body=t.split("\n## ")[0]; const lines=body.split("\n"); const al=(lines.find(l=>/patients may say:/i.test(l))||"").replace(/^.*?:\s*/,"").split(",").map(x=>x.trim().toLowerCase()).filter(x=>x.length>=2); return {phrases:[lines[0].toLowerCase().replace(/\(.*?\)/g,"").trim()].concat(al), text:"### "+body.trim()}; });
+  AIKB={core,secs}; }
+function aiRules(q){ const t=" "+norm(q)+" "; const hits=AIKB.secs.map(s=>{ let sc=0; for(const ph of s.phrases){ if(ph && t.includes(" "+ph+" ")) sc+=10+ph.length; } return [sc,s]; }).filter(x=>x[0]>0).sort((a,b)=>b[0]-a[0]).slice(0,3).map(x=>x[1].text);
+  return AIPROMPT+"\n\n=== CLINIC FACTS ===\n"+AIKB.core+(hits.length?"\n\n=== TREATMENT DETAILS ===\n"+hits.join("\n\n"):"")+"\n\nReply with only what to say: 1-3 short plain sentences, no lists or markdown, in the patient's language (Telugu in Telugu script, Hindi in Devanagari)."; }
+async function aiAnswer(text, spoken, fallbackAns){
+  const key=aiKey(); const d=botSay("…"); setOrb("talk"); statusEl.textContent="Thinking…";
+  try{
+    await loadKB();
+    const ctx=aiTurns.slice(-6).map(t=>t.content).join(" ")+" "+text+" "+(current?current.n:"");
+    aiTurns.push({role:"user",content:text});
+    const contents=aiTurns.slice(-8).map(t=>({role:t.role==="assistant"?"model":"user",parts:[{text:t.content}]}));
+    let out="", ok=false, lastErr=null;
+    for(const m of ["gemini-2.5-flash","gemini-flash-latest","gemini-2.5-flash-lite"]){
+      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:streamGenerateContent?alt=sse`,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":key},body:JSON.stringify({systemInstruction:{parts:[{text:aiRules(ctx)}]},contents,generationConfig:{temperature:0.5,maxOutputTokens:300,thinkingConfig:{thinkingBudget:0}}})});
+      if(r.status===404){ lastErr="404"; continue; }
+      if(!r.ok){ lastErr=r.status+" "+(await r.text()).slice(0,160); break; }
+      const rd=r.body.getReader(), dec=new TextDecoder(); let buf="";
+      for(;;){ const {done,value}=await rd.read(); if(done) break; buf+=dec.decode(value,{stream:true}); let i; while((i=buf.indexOf("\n"))>=0){ const line=buf.slice(0,i).trim(); buf=buf.slice(i+1); if(!line.startsWith("data:")) continue; try{ const j=JSON.parse(line.slice(5)); const dl=(j.candidates?.[0]?.content?.parts||[]).map(x=>x.text||"").join(""); if(dl){ out+=dl; d.firstChild.nodeValue=out; scrollLog(); } }catch(_){} } }
+      ok=true; break;
+    }
+    if(!ok || !out.trim()) throw new Error(lastErr||"empty");
+    out=out.trim(); aiTurns.push({role:"assistant",content:out}); d.firstChild.nodeValue=out;
+    const lg=/[ఀ-౿]/.test(out)?"te":/[ऀ-ॿ]/.test(out)?"hi":"en";
+    const v=goodDeviceVoice(lg);
+    if((soundOn||spoken) && v){ speakDevice(out, v, lg); } else { setOrb(""); afterSpeak(); }
+  }catch(e){ aiTurns.pop(); d.remove(); setOrb(""); reply(fallbackAns, spoken); }
+}
 function ask(text, spoken){
   text=String(text||"").trim(); if(!text) return;
   meSay(text); try{ stopSpeak(); autoVoice(text); }catch(_){}
   let ans; try{ ans=localAnswer(text); }catch(err){ ans=A(lg=>G[lg].noproc,{tc:["g-noproc"]}); }
+  if(ans && ans.unsure && aiKey() && /^https?:$/.test(location.protocol)) return aiAnswer(text, spoken, ans);
   reply(ans, spoken);
 }
 document.getElementById("askF").addEventListener("submit",e=>{ e.preventDefault(); const m=document.getElementById("msg"); const v=m.value; m.value=""; ask(v); m.blur(); });
