@@ -178,6 +178,7 @@ async function askGemini(signal,onText){
       if(e.status===400 && /thinking/i.test(e.message||"") && route.think){ try{ const t=await streamOnce({...route,think:false},key,signal,onText); working={base:route.base,m:route.m}; return t; }catch(e2){ last=e2; } }
       if(e.status===429) throw e; }
   }
+  if(last){ last.message=(last.message||"")+" [tried: "+order.map(r=>r.base.includes("aiplatform")?"vertex/"+r.m:"studio/"+r.m).join(", ")+"]"; }
   throw last;
 }
 async function askClaude(signal,onText){
@@ -246,6 +247,8 @@ async function handle(text){
     else if(st===429||code==="rate_limited") sys("The free AI is busy (too many questions in a minute). Please wait a few seconds and try again.",true);
     else if(code==="not_granted") sys("Claude access was not allowed. Reload and allow it to test.",true);
     else sys("Couldn't reach the AI. Check the internet and try again.",true);
+    const detail=(st?("Error "+st+": "):"")+String((e&&e.message)||e||"").replace(/\s+/g," ").slice(0,220);
+    sys("Details for Claude/support: "+detail+" · key starts with "+getKey().slice(0,4)+"…");
     live=false; idle(); return;
   }
   busy=null;
