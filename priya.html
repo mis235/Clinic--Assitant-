@@ -130,6 +130,22 @@ const GEMINI_MODELS=["gemini-flash-latest","gemini-2.5-flash","gemini-2.0-flash"
 let modelIdx=0;
 async function askGemini(signal){
   const key=getKey();
+  if(/^AQ\./.test(key)) return askVertex(key, signal);
+  try{ return await askGeminiAS(key, signal); }
+  catch(e){ if(e && (e.status===400||e.status===401||e.status===403) && !/quota|rate/i.test(e.message||"")) { try{ return await askVertex(key, signal); }catch(_){ } } throw e; }
+}
+/* Vertex AI "express" keys (start with AQ.) use a different address but the same request format */
+async function askVertex(key, signal){
+  const contents=turns.map(t=>({role:t.role==="assistant"?"model":"user", parts:[{text:t.content}]}));
+  let last=null;
+  for(const m of ["gemini-2.5-flash","gemini-2.0-flash-001","gemini-flash-latest"]){
+    const r=await fetch(`https://aiplatform.googleapis.com/v1/publishers/google/models/${m}:generateContent?key=${encodeURIComponent(key)}`,{method:"POST",signal,headers:{"Content-Type":"application/json"},body:JSON.stringify({systemInstruction:{parts:[{text:RULES}]},contents,generationConfig:{temperature:0.6,maxOutputTokens:400}})});
+    if(r.ok){ const j=await r.json(); return (j.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("").trim(); }
+    last=new Error(await r.text()); last.status=r.status; if(r.status!==404) break;
+  }
+  throw last;
+}
+async function askGeminiAS(key, signal){
   const contents=turns.map(t=>({role:t.role==="assistant"?"model":"user", parts:[{text:t.content}]}));
   for(; modelIdx<GEMINI_MODELS.length; modelIdx++){
     const url=`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODELS[modelIdx]}:generateContent?key=${encodeURIComponent(key)}`;
