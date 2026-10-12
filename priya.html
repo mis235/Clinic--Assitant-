@@ -75,7 +75,7 @@ form button,.btn{border:0;background:var(--accent);color:#fff;border-radius:999p
     <p style="margin:0">Priya uses Google's free Gemini AI. You need a free key:</p>
     <ol>
       <li>Open <b>aistudio.google.com/apikey</b> and sign in with any Google account.</li>
-      <li>Tap <b>Create API key</b> and copy it.</li>
+      <li>Tap <b>Create API key</b> and copy it (new keys start with <b>AQ.</b> — that's fine).</li>
       <li>Paste it below and tap <b>Save</b>.</li>
     </ol>
     <input id="keyIn" type="password" placeholder="Paste your Gemini API key" autocomplete="off">
@@ -159,7 +159,7 @@ const ROUTES=[
 async function streamOnce(route, key, signal, onText){
   const contents=turns.map(t=>({role:t.role==="assistant"?"model":"user", parts:[{text:t.content}]}));
   const gen={temperature:0.5,maxOutputTokens:300}; if(route.think) gen.thinkingConfig={thinkingBudget:0};
-  const r=await fetch(`${route.base}${route.m}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`,{method:"POST",signal,headers:{"Content-Type":"application/json"},
+  const r=await fetch(`${route.base}${route.m}:streamGenerateContent?alt=sse`,{method:"POST",signal,headers:{"Content-Type":"application/json","x-goog-api-key":key},
     body:JSON.stringify({systemInstruction:{parts:[{text:buildRules()}]},contents,generationConfig:gen})});
   if(!r.ok){ const e=new Error(await r.text()); e.status=r.status; throw e; }
   const rd=r.body.getReader(), dec=new TextDecoder(); let buf="", text="";
@@ -170,7 +170,7 @@ async function streamOnce(route, key, signal, onText){
 }
 async function askGemini(signal,onText){
   const key=getKey();
-  const order = working ? [ROUTES.find(r=>r.base===working.base&&r.m===working.m)||ROUTES[0], ...ROUTES] : (/^AQ\./.test(key)? [...ROUTES.slice(3),...ROUTES.slice(0,3)] : ROUTES);
+  const order = working ? [ROUTES.find(r=>r.base===working.base&&r.m===working.m)||ROUTES[0], ...ROUTES] : ROUTES;
   let last=null;
   for(const route of order){
     try{ const t=await streamOnce(route,key,signal,onText); working={base:route.base,m:route.m}; try{localStorage.setItem("priya-route",JSON.stringify(working));}catch(_){} return t; }
@@ -243,7 +243,7 @@ async function handle(text){
     if(e && (e.name==="AbortError"||e.code==="cancelled")) return;
     turns.pop(); if(bub) bub.remove();
     const st=e&&e.status, code=e&&e.code;
-    if(st===400||st===401||st===403) sys("The AI key isn't working. Tap 'AI key' and paste a key from aistudio.google.com/apikey (it starts with AIza).",true);
+    if(st===400||st===401||st===403) sys("The AI key isn't working. Tap 'AI key' and paste a fresh key from aistudio.google.com/apikey.",true);
     else if(st===429||code==="rate_limited") sys("The free AI is busy (too many questions in a minute). Please wait a few seconds and try again.",true);
     else if(code==="not_granted") sys("Claude access was not allowed. Reload and allow it to test.",true);
     else sys("Couldn't reach the AI. Check the internet and try again.",true);
