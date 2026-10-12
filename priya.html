@@ -110,8 +110,29 @@ document.querySelectorAll("[data-l]").forEach(b=>{ b.setAttribute("aria-pressed"
 
 /* ---------- conversation memory ---------- */
 let turns=[];  // {role:"user"|"assistant", content}
-const RULES = PROMPT + "\n\n=== KNOWLEDGE BASE (the only source of facts) ===\n" + KB +
- "\n\n=== OUTPUT RULES ===\nReply with ONLY what Priya says out loud: plain sentences, no markdown, no lists, no emojis. 1 to 3 short sentences. Write Telugu replies in Telugu script and Hindi replies in Devanagari script (keep treatment names and common English words like treatment, session, skin in English letters) so the voice reads them correctly.";
+/* Knowledge: always send the clinic basics + service list; add only the 3 treatments that match the conversation.
+   A small prompt answers in 1-2 seconds and stays focused (sending everything made it slow and vague). */
+const KB_CORE = KB.split("## Treatment details")[0] + "\n## Common front-desk questions" + (KB.split("## Common front-desk questions")[1]||"");
+const KB_SECTIONS = KB.split("\n### ").slice(1).map(t=>{ const body=t.split("\n## ")[0]; const lines=body.split("\n"); const title=lines[0];
+  const al=(lines.find(l=>/patients may say:/i.test(l))||"").replace(/^.*?:\s*/,"").split(",").map(x=>x.trim().toLowerCase()).filter(x=>x.length>=2);
+  const names=[title.toLowerCase().replace(/\(.*?\)/g,"").trim(), ...(title.match(/\((.*?)\)/)||[,""])[1].toLowerCase().split(/,| or /).map(x=>x.trim()).filter(Boolean)];
+  return {title, phrases:[...new Set(names.concat(al))].filter(p=>p.length>=2), text:"### "+body.trim()}; });
+const FIX={"so facial":"zo facial","jo facial":"zo facial","zoe facial":"zo facial","oxygen":"oxygeneo","meditations":"medifacials","hydra facial":"hydrafacial","g f c":"gfc","hi fu":"hifu","m n r f":"mnrf"};
+function normQ(q){ let t=" "+q.toLowerCase().replace(/[^\p{L}\p{N} ]+/gu," ").replace(/\s+/g," ")+" "; for(const [k,v] of Object.entries(FIX)) t=t.split(" "+k+" ").join(" "+v+" "); return t; }
+function scoreSecs(q){ const t=normQ(q); return KB_SECTIONS.map(s=>{ let sc=0; for(const p of s.phrases){ if(t.includes(" "+p+" ")) sc+=10+p.length; } return [sc,s]; }).filter(x=>x[0]>0).sort((a,b)=>b[0]-a[0]); }
+function relevant(){
+  const users=turns.filter(t=>t.role==="user").map(t=>t.content);
+  const last=users[users.length-1]||"";
+  let hits=scoreSecs(last);
+  if(!hits.length){ const recent=turns.slice(-4).map(t=>t.content).join(" "); hits=scoreSecs(recent); }   // follow-ups like "cost?" keep the treatment being discussed
+  return hits.slice(0,3).map(x=>x[1].text);
+}
+function buildRules(){
+  const secs=relevant();
+  return PROMPT + "\n\n=== CLINIC FACTS (the only source of facts) ===\n" + KB_CORE +
+    (secs.length? "\n\n=== DETAILS OF THE TREATMENTS BEING DISCUSSED ===\n"+secs.join("\n\n") : "\n\n(No specific treatment matched yet. If the patient asks about a treatment, use the service list above, and ask which one they mean if unclear.)") +
+    "\n\n=== OUTPUT RULES ===\nReply with ONLY what Priya says out loud: plain sentences, no markdown, no lists, no emojis. 1 to 3 short sentences, under 45 words. Reply in the language of the patient's last message. Write Telugu replies in Telugu script and Hindi replies in Devanagari script (keep treatment names and common English words like treatment, session, skin in English letters).";
+}
 
 /* ---------- AI engines: Claude (inside claude.ai) or free Gemini (on the website) ---------- */
 let sampleFn=null, engine="none";
@@ -126,46 +147,42 @@ async function initEngine(){
   else { engine="none"; $("setup").hidden=false; }
   setEngineBadge();
 }
-const GEMINI_MODELS=["gemini-flash-latest","gemini-2.5-flash","gemini-2.0-flash"];
-let modelIdx=0;
-async function askGemini(signal){
-  const key=getKey();
-  if(/^AQ\./.test(key)) return askVertex(key, signal);
-  try{ return await askGeminiAS(key, signal); }
-  catch(e){ if(e && (e.status===400||e.status===401||e.status===403) && !/quota|rate/i.test(e.message||"")) { try{ return await askVertex(key, signal); }catch(_){ } } throw e; }
-}
-/* Vertex AI "express" keys (start with AQ.) use a different address but the same request format */
-async function askVertex(key, signal){
+/* Streaming: text arrives word by word, Priya starts speaking after the first sentence. */
+let working=null; try{ working=JSON.parse(localStorage.getItem("priya-route")||"null"); }catch(_){}
+const ROUTES=[
+  {base:"https://generativelanguage.googleapis.com/v1beta/models/", m:"gemini-2.5-flash", think:true},
+  {base:"https://generativelanguage.googleapis.com/v1beta/models/", m:"gemini-flash-latest", think:true},
+  {base:"https://generativelanguage.googleapis.com/v1beta/models/", m:"gemini-2.5-flash-lite", think:true},
+  {base:"https://aiplatform.googleapis.com/v1/publishers/google/models/", m:"gemini-2.5-flash", think:true},
+  {base:"https://aiplatform.googleapis.com/v1/publishers/google/models/", m:"gemini-2.5-flash-lite", think:true}
+];
+async function streamOnce(route, key, signal, onText){
   const contents=turns.map(t=>({role:t.role==="assistant"?"model":"user", parts:[{text:t.content}]}));
+  const gen={temperature:0.5,maxOutputTokens:300}; if(route.think) gen.thinkingConfig={thinkingBudget:0};
+  const r=await fetch(`${route.base}${route.m}:streamGenerateContent?alt=sse&key=${encodeURIComponent(key)}`,{method:"POST",signal,headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({systemInstruction:{parts:[{text:buildRules()}]},contents,generationConfig:gen})});
+  if(!r.ok){ const e=new Error(await r.text()); e.status=r.status; throw e; }
+  const rd=r.body.getReader(), dec=new TextDecoder(); let buf="", text="";
+  for(;;){ const {done,value}=await rd.read(); if(done) break; buf+=dec.decode(value,{stream:true});
+    let i; while((i=buf.indexOf("\n"))>=0){ const line=buf.slice(0,i).trim(); buf=buf.slice(i+1);
+      if(!line.startsWith("data:")) continue; try{ const j=JSON.parse(line.slice(5)); const d=(j.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join(""); if(d){ text+=d; onText(text); } }catch(_){} } }
+  return text.trim();
+}
+async function askGemini(signal,onText){
+  const key=getKey();
+  const order = working ? [ROUTES.find(r=>r.base===working.base&&r.m===working.m)||ROUTES[0], ...ROUTES] : (/^AQ\./.test(key)? [...ROUTES.slice(3),...ROUTES.slice(0,3)] : ROUTES);
   let last=null;
-  for(const m of ["gemini-2.5-flash","gemini-2.0-flash-001","gemini-flash-latest"]){
-    const r=await fetch(`https://aiplatform.googleapis.com/v1/publishers/google/models/${m}:generateContent?key=${encodeURIComponent(key)}`,{method:"POST",signal,headers:{"Content-Type":"application/json"},body:JSON.stringify({systemInstruction:{parts:[{text:RULES}]},contents,generationConfig:{temperature:0.6,maxOutputTokens:400}})});
-    if(r.ok){ const j=await r.json(); return (j.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("").trim(); }
-    last=new Error(await r.text()); last.status=r.status; if(r.status!==404) break;
+  for(const route of order){
+    try{ const t=await streamOnce(route,key,signal,onText); working={base:route.base,m:route.m}; try{localStorage.setItem("priya-route",JSON.stringify(working));}catch(_){} return t; }
+    catch(e){ if(e.name==="AbortError") throw e; last=e;
+      if(e.status===400 && /thinking/i.test(e.message||"") && route.think){ try{ const t=await streamOnce({...route,think:false},key,signal,onText); working={base:route.base,m:route.m}; return t; }catch(e2){ last=e2; } }
+      if(e.status===429) throw e; }
   }
   throw last;
 }
-async function askGeminiAS(key, signal){
-  const contents=turns.map(t=>({role:t.role==="assistant"?"model":"user", parts:[{text:t.content}]}));
-  for(; modelIdx<GEMINI_MODELS.length; modelIdx++){
-    const url=`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODELS[modelIdx]}:generateContent?key=${encodeURIComponent(key)}`;
-    const r=await fetch(url,{method:"POST",signal,headers:{"Content-Type":"application/json"},body:JSON.stringify({
-      systemInstruction:{parts:[{text:RULES}]}, contents,
-      generationConfig:{temperature:0.6,maxOutputTokens:400,thinkingConfig:{thinkingBudget:0}}})});
-    if(r.status===404) continue;
-    if(r.status===400 && modelIdx<GEMINI_MODELS.length-1){ const t=await r.text(); if(/thinking/i.test(t)) { // older model: retry without thinkingConfig
-        const r2=await fetch(url,{method:"POST",signal,headers:{"Content-Type":"application/json"},body:JSON.stringify({systemInstruction:{parts:[{text:RULES}]},contents,generationConfig:{temperature:0.6,maxOutputTokens:400}})});
-        if(r2.ok){ const j=await r2.json(); return (j.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("").trim(); } }
-      const e=new Error(t); e.status=400; throw e; }
-    if(!r.ok){ const e=new Error(await r.text()); e.status=r.status; throw e; }
-    const j=await r.json();
-    return (j.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("").trim();
-  }
-  const e=new Error("No Gemini model available for this key"); e.status=404; throw e;
-}
-async function askClaude(signal){
-  const input=[{role:"user",content:RULES+"\n\nThe conversation starts now. Reply as Priya to the patient's messages."},{role:"assistant",content:"Understood. I'm Priya."},...turns];
-  const {text}=await sampleFn(input,{signal,cache:false,modelTier:"quick"});
+async function askClaude(signal,onText){
+  const input=[{role:"user",content:buildRules()+"\n\nThe conversation starts now. Reply as Priya to the patient's messages."},{role:"assistant",content:"Understood. I'm Priya."},...turns];
+  const {text}=await sampleFn(input,{signal,cache:false,modelTier:"quick",onText:({text})=>onText(text)});
   return text.trim();
 }
 
@@ -175,20 +192,16 @@ function loadVoices(){ if(synth) voices=synth.getVoices(); } if(synth){ loadVoic
 const FEMALE=/female|woman|heera|kalpana|swara|neerja|shruti|aditi|kajal|priya|lekha|veena|google/i, MALE=/(^|[^e])male\b|rishi|ravi\b|hemant|prabhat|madhur|mohan/i;
 function voiceFor(tag){ let best=null,bs=-1; for(const v of voices){ const vl=(v.lang||"").toLowerCase().replace("_","-"); if(!vl.startsWith(tag.slice(0,2))) continue; let s=10; if(vl===tag.toLowerCase()) s+=40; if(FEMALE.test(v.name)) s+=25; if(MALE.test(v.name)) s-=60; if(/natural|online|neural|google/i.test(v.name)) s+=12; if(s>bs){bs=s;best=v;} } return best; }
 function scriptLang(t){ if(/[ఀ-౿]/.test(t)) return "te-IN"; if(/[ऀ-ॿ]/.test(t)) return "hi-IN"; return "en-IN"; }
-function speak(text){
-  return new Promise(res=>{
-    if(!synth){ res(); return; }
-    const tag=scriptLang(text), v=voiceFor(tag);
-    if(!v && tag!=="en-IN"){ res(); return; }
-    synth.cancel();
-    const clean=text.replace(/\+91 ?93812 ?19187/g,"9 3 8 1 2, 1 9 1 8 7").replace(/[*#•_]/g,"");
-    const parts=clean.match(/[^.!?।]+[.!?।]*/g)||[clean];
-    let left=parts.length;
-    parts.forEach(s=>{ const u=new SpeechSynthesisUtterance(s.trim()); if(v){u.voice=v;u.lang=v.lang;} else u.lang=tag; u.rate=tag==="en-IN"?1:.95;
-      u.onend=u.onerror=()=>{ if(--left<=0) res(); }; synth.speak(u); });
-  });
-}
-function stopVoice(){ if(synth) synth.cancel(); }
+function cleanSay(t){ return t.replace(/\+91 ?93812 ?19187/g,"9 3 8 1 2, 1 9 1 8 7").replace(/[*#•_]/g,""); }
+let sayQ=[], saying=false, sayDone=null;
+function sayNext(){ if(!sayQ.length){ saying=false; if(sayDone){ const f=sayDone; sayDone=null; f(); } return; }
+  saying=true; const s=sayQ.shift(); const tag=scriptLang(s), v=voiceFor(tag);
+  if(!synth || (!v && tag!=="en-IN")){ saying=false; sayQ=[]; if(sayDone){ const f=sayDone; sayDone=null; f(); } return; }
+  const u=new SpeechSynthesisUtterance(cleanSay(s)); if(v){u.voice=v;u.lang=v.lang;} else u.lang=tag; u.rate=tag==="en-IN"?1:.95;
+  u.onend=u.onerror=()=>sayNext(); synth.speak(u); }
+function say(sentence){ if(!sentence.trim()) return; sayQ.push(sentence.trim()); if(!saying) sayNext(); }
+function sayFinished(){ return new Promise(res=>{ if(!saying && !sayQ.length) res(); else sayDone=res; }); }
+function stopVoice(){ sayQ=[]; saying=false; sayDone=null; if(synth) synth.cancel(); }
 
 /* ---------- voice in ---------- */
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -217,25 +230,31 @@ async function handle(text){
   if(turns.length>24) turns=turns.slice(-24);
   setState("think","Priya is thinking…");
   const ctl=new AbortController(); busy=ctl;
-  let reply="";
-  try{ reply = engine==="claude" ? await askClaude(ctl.signal) : await askGemini(ctl.signal); }
+  let reply="", spokenUpTo=0, bub=null;
+  const onText=(t)=>{ if(ctl.signal.aborted) return;
+    if(!bub){ bub=bubble("ai",""); setState("talk","Priya is speaking… tap to interrupt"); }
+    bub.textContent=t; bub.scrollIntoView({block:"end"});
+    const done=t.slice(spokenUpTo); const m=done.match(/^[\s\S]*?[.!?।](\s|$)/);
+    if(m){ say(m[0]); spokenUpTo+=m[0].length; } };
+  try{ reply = engine==="claude" ? await askClaude(ctl.signal,onText) : await askGemini(ctl.signal,onText); }
   catch(e){
     busy=null;
     if(e && (e.name==="AbortError"||e.code==="cancelled")) return;
-    turns.pop();
+    turns.pop(); if(bub) bub.remove();
     const st=e&&e.status, code=e&&e.code;
-    if(st===400||st===403) { sys("The AI key isn't working. Tap 'AI key' and paste a new key from aistudio.google.com/apikey.",true); }
+    if(st===400||st===401||st===403) sys("The AI key isn't working. Tap 'AI key' and paste a key from aistudio.google.com/apikey (it starts with AIza).",true);
     else if(st===429||code==="rate_limited") sys("The free AI is busy (too many questions in a minute). Please wait a few seconds and try again.",true);
     else if(code==="not_granted") sys("Claude access was not allowed. Reload and allow it to test.",true);
     else sys("Couldn't reach the AI. Check the internet and try again.",true);
     live=false; idle(); return;
   }
   busy=null;
-  if(!reply) reply="Sorry, could you say that again?";
+  if(!reply){ reply="Sorry, could you say that again?"; onText(reply); }
+  if(bub) bub.textContent=reply;
+  say(reply.slice(spokenUpTo));
   turns.push({role:"assistant",content:reply});
-  bubble("ai",reply);
   setState("talk","Priya is speaking… tap to interrupt");
-  await speak(reply);
+  await sayFinished();
   if(ctl.signal.aborted) return;
   if(live) listen(); else idle();
 }
@@ -251,7 +270,7 @@ $("q").addEventListener("input",()=>{ if(orb.classList.contains("talk")) stopVoi
 $("newChat").onclick=()=>{ interrupt(); live=false; turns=[]; log.innerHTML=""; idle(); greet(); };
 $("keyBtn").onclick=()=>{ $("setup").hidden=false; $("keyIn").value=getKey(); $("keyIn").focus(); };
 $("keyCancel").onclick=()=>{ $("setup").hidden=true; };
-$("keySave").onclick=()=>{ const k=$("keyIn").value.trim(); if(!k) return; try{ localStorage.setItem("priya-gemini-key",k); }catch(_){ sys("This browser can't save the key.",true); return; } modelIdx=0; engine= sampleFn?"claude":"gemini"; setEngineBadge(); $("setup").hidden=true; sys("AI connected. Tap the circle and say hello!"); };
+$("keySave").onclick=()=>{ const k=$("keyIn").value.trim(); if(!k) return; working=null; try{ localStorage.removeItem("priya-route"); localStorage.setItem("priya-gemini-key",k); }catch(_){ sys("This browser can't save the key.",true); return; } engine= sampleFn?"claude":"gemini"; setEngineBadge(); $("setup").hidden=true; sys("AI connected. Tap the circle and say hello!"); };
 
 function greet(){ const g={ "te-IN":"నమస్తే! డాక్టర్ నిషిత క్లినిక్‌కి వెల్కమ్. నేను ప్రియ. మీకు ఏ హెల్ప్ కావాలి?","hi-IN":"नमस्ते! डॉ. निशिता क्लिनिक में आपका स्वागत है। मैं प्रिया हूँ। बताइए, मैं क्या मदद करूं?","en-IN":"Hello! Welcome to Dr. Nishita's Clinic. I'm Priya, the clinic assistant. How can I help you today?"}[lang];
   bubble("ai",g); turns=[{role:"user",content:"(The patient opened the assistant.)"},{role:"assistant",content:g}]; }
